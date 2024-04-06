@@ -432,7 +432,11 @@ impl Core {
                 return match head_idx.cmp(&tail_idx) {
                     cmp::Ordering::Less => tail_idx - head_idx,
                     cmp::Ordering::Greater => self.capacity - head_idx + tail_idx,
-                    _ if tail == head => 0,
+                    // Ignore the closed bit when comparing head and tail here,
+                    // since it's not relevant to the length of the channel. If
+                    // both indices point at the same slot and lap, the length
+                    // is zero, even if the channel has been closed.
+                    _ if (tail & !self.closed) == (head & !self.closed) => 0,
                     _ => self.capacity,
                 };
             }
@@ -665,3 +669,31 @@ impl<T> fmt::Display for Full<T> {
 
 #[cfg(feature = "std")]
 impl<T> std::error::Error for Full<T> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_len() {
+        const CAP: usize = 16;
+        let mut core = Core::new(CAP);
+        assert_eq!(core.len(), 0);
+        assert_eq!(core.capacity(), CAP);
+
+        // don't panic in drop impl.
+        core.has_dropped_slots = true;
+    }
+
+    #[test]
+    fn closed_channel_len() {
+        const CAP: usize = 16;
+        let mut core = Core::new(CAP);
+        core.close();
+        assert_eq!(core.len(), 0);
+        assert_eq!(core.capacity(), CAP);
+
+        // don't panic in drop impl.
+        core.has_dropped_slots = true;
+    }
+}
