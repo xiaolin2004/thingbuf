@@ -72,7 +72,7 @@ jobs:
     strategy:
       matrix:
         # test all Rust versions on Ubuntu
-        rust: [stable, 1.57.0]
+        rust: [stable]
         os: [ubuntu-latest]
         # test stable Rust on Windows and MacOS as well
         include:
