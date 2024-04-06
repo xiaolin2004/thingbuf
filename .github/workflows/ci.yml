@@ -250,4 +250,4 @@ jobs:
       - name: Run Miri tests
         run: cargo miri test --lib --no-fail-fast
         env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-tag-raw-pointers
+          MIRIFLAGS: -Zmiri-disable-isolation

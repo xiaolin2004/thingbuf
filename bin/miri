@@ -6,5 +6,5 @@ set -x
 
 cd "$(dirname "$0")"/..
 
-MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-tag-raw-pointers ${MIRIFLAGS:-}" \
+MIRIFLAGS="-Zmiri-disable-isolation ${MIRIFLAGS:-}" \
     cargo +nightly miri test --lib "${@}"
