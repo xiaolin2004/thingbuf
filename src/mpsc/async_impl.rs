@@ -1,14 +1,13 @@
 use super::*;
 use crate::{
     loom::atomic::{self, Ordering},
-    recycling::{self, Recycle},
+    recycling,
     wait::queue,
 };
 use core::{
-    fmt,
     future::Future,
     pin::Pin,
-    task::{Context, Poll, Waker},
+    task::{Context, Waker},
 };
 use errors::*;
 
