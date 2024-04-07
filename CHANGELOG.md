@@ -1,3 +1,18 @@
+<a name="v0.1.5"></a>
+## v0.1.5 (2024-04-06)
+
+
+#### Features
+
+* **mpsc:**  add `len`, `capacity`, and `remaining` methods to mpsc (#72) ([00213c11](https://github.com/hawkw/thingbuf/commit/00213c1174caa8328e982c3036adaefdfb37b895), closes [#71](https://github.com/hawkw/thingbuf/issues/71))
+
+#### Bug Fixes
+
+*   unused import with `alloc` enabled ([ac1eafcc](https://github.com/hawkw/thingbuf/commit/ac1eafccbdff39e7be22823184daf44f8ee99d12))
+*   skip slots with active reading `Ref`s in `push_ref` (#81) ([a72a2869](https://github.com/hawkw/thingbuf/commit/a72a2869237c79cd81b58bfcd18b5ded39430cd6), closes [#83](https://github.com/hawkw/thingbuf/issues/83), [#80](https://github.com/hawkw/thingbuf/issues/80))
+
+
+
 <a name="v0.1.4"></a>
 ## v0.1.4 (2023-05-01)
 
@@ -95,6 +110,3 @@ Initial release!
 * **mpsc:**
   *  ensure un-received messages are dropped (#29) ([c444e50b](https://github.com/hawkw/thingbuf/commit/c444e50b8d2ca98745ae451100a4b01f84d054d5))
   *  fix a deadlock in async send_ref  (#20) ([c58c6200](https://github.com/hawkw/thingbuf/commit/c58c620096a063e275f9c16e0a89da3399b47877))
-
-
-

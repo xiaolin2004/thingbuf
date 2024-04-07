@@ -72,7 +72,7 @@ jobs:
     strategy:
       matrix:
         # test all Rust versions on Ubuntu
-        rust: [stable, 1.57.0]
+        rust: [stable]
         os: [ubuntu-latest]
         # test stable Rust on Windows and MacOS as well
         include:
@@ -170,6 +170,7 @@ jobs:
           - mpsc_send_recv_wrap
           - mpsc_try_send_recv
           - mpsc_try_recv_ref
+          - mpsc_test_skip_slot
           - mpsc_async::rx_close_unconsumed
           - mpsc_blocking::rx_close_unconsumed
     name: model '${{ matrix.model }}''
@@ -249,4 +250,4 @@ jobs:
       - name: Run Miri tests
         run: cargo miri test --lib --no-fail-fast
         env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-tag-raw-pointers
+          MIRIFLAGS: -Zmiri-disable-isolation

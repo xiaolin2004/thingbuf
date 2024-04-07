@@ -13,6 +13,7 @@ use crate::{
     recycling::{self, Recycle},
     util::Backoff,
     wait::queue,
+    MAX_CAPACITY,
 };
 use core::{fmt, pin::Pin};
 use errors::*;
@@ -32,6 +33,11 @@ pub fn channel<T: Default + Clone>(capacity: usize) -> (Sender<T>, Receiver<T>) 
 /// Returns a new synchronous multi-producer, single consumer channel with
 /// the provided [recycling policy].
 ///
+/// # Panics
+///
+/// Panics if the capacity exceeds `usize::MAX & !(1 << (usize::BITS - 1))`. This value represents
+/// the highest power of two that can be expressed by a `usize`, excluding the most significant bit.
+///
 /// [recycling policy]: crate::recycling::Recycle
 #[must_use]
 pub fn with_recycle<T, R: Recycle<T>>(
@@ -39,6 +45,7 @@ pub fn with_recycle<T, R: Recycle<T>>(
     recycle: R,
 ) -> (Sender<T, R>, Receiver<T, R>) {
     assert!(capacity > 0);
+    assert!(capacity <= MAX_CAPACITY);
     let inner = Arc::new(Inner {
         core: ChannelCore::new(capacity),
         slots: Slot::make_boxed_array(capacity),
@@ -529,6 +536,133 @@ feature! {
         pub fn try_send(&self, val: T) -> Result<(), TrySendError<T>> {
             self.core.try_send(self.slots, val, self.recycle)
         }
+
+        /// Returns the *total* capacity of the channel for this [`StaticSender`].
+        /// This includes both occupied and unoccupied entries.
+        ///
+        /// To determine the channel's remaining *unoccupied* capacity, use
+        /// [`remaining`] instead.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, _) = CHANNEL.split();
+        /// assert_eq!(tx.capacity(), 100);
+        /// ```
+        ///
+        /// Even after sending several messages, the capacity remains
+        /// the same:
+        /// ```
+        /// # use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// # static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, rx) = CHANNEL.split();
+        /// *tx.try_send_ref().unwrap() = 1;
+        /// *tx.try_send_ref().unwrap() = 2;
+        /// *tx.try_send_ref().unwrap() = 3;
+        ///
+        /// assert_eq!(tx.capacity(), 100);
+        /// ```
+        ///
+        /// [`remaining`]: Self::remaining
+        #[inline]
+        #[must_use]
+        pub fn capacity(&self) -> usize {
+            self.core.core.capacity()
+        }
+
+        /// Returns the unoccupied capacity of the channel for this [`StaticSender`]
+        /// (i.e., how many additional elements can be sent before the channel
+        /// will be full).
+        ///
+        /// This is equivalent to subtracting the channel's [`len`] from its [`capacity`].
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, rx) = CHANNEL.split();
+        /// assert_eq!(tx.remaining(), 100);
+        ///
+        /// *tx.try_send_ref().unwrap() = 1;
+        /// *tx.try_send_ref().unwrap() = 2;
+        /// *tx.try_send_ref().unwrap() = 3;
+        /// assert_eq!(tx.remaining(), 97);
+        ///
+        /// let _ = rx.try_recv_ref().unwrap();
+        /// assert_eq!(tx.remaining(), 98)
+        /// ```
+        ///
+        /// [`len`]: Self::len
+        /// [`capacity`]: Self::capacity
+        #[must_use]
+        pub fn remaining(&self) -> usize {
+            self.capacity() - self.len()
+        }
+
+        /// Returns the number of elements in the channel of this [`StaticSender`].
+        ///
+        /// To determine the channel's remaining *unoccupied* capacity, use
+        /// [`remaining`] instead.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, rx) = CHANNEL.split();
+        /// assert_eq!(tx.len(), 0);
+        ///
+        /// *tx.try_send_ref().unwrap() = 1;
+        /// *tx.try_send_ref().unwrap() = 2;
+        /// *tx.try_send_ref().unwrap() = 3;
+        /// assert_eq!(tx.len(), 3);
+        ///
+        /// let _ = rx.try_recv_ref().unwrap();
+        /// assert_eq!(tx.len(), 2);
+        /// ```
+        ///
+        /// [`remaining`]: Self::remaining
+        #[inline]
+        #[must_use]
+        pub fn len(&self) -> usize {
+            self.core.core.len()
+        }
+
+        /// Returns whether the number of elements in the channel of this [`StaticSender`] is 0.
+        ///
+        /// # Examples
+        /// ```
+        /// use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, rx) = CHANNEL.split();
+        /// assert!(tx.is_empty());
+        ///
+        /// *tx.try_send_ref().unwrap() = 1;
+        ///
+        /// assert!(!tx.is_empty());
+        /// # // keep rx alive so that the send call succeeds --- otherwise,
+        /// # // the channel will close and the send will fail.
+        /// # drop(rx);
+        /// ```
+        ///
+        #[inline]
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
     }
 
     impl<T, R> Clone for StaticSender<T, R> {
@@ -874,6 +1008,130 @@ feature! {
         /// on this channel. Previously sent messages may still be available.
         pub fn is_closed(&self) -> bool {
             test_dbg!(self.core.tx_count.load(Ordering::SeqCst)) <= 1
+        }
+
+        /// Returns the *total* capacity of the channel for this [`StaticReceiver`].
+        /// This includes both occupied and unoccupied entries.
+        ///
+        /// To determine the channel's remaining *unoccupied* capacity, use
+        /// [`remaining`] instead.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (_, rx) = CHANNEL.split();
+        /// assert_eq!(rx.capacity(), 100);
+        /// ```
+        ///
+        /// Even after sending several messages, the capacity remains
+        /// the same:
+        /// ```
+        /// # use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// # static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, rx) = CHANNEL.split();
+        /// *tx.try_send_ref().unwrap() = 1;
+        /// *tx.try_send_ref().unwrap() = 2;
+        /// *tx.try_send_ref().unwrap() = 3;
+        ///
+        /// assert_eq!(rx.capacity(), 100);
+        /// ```
+        ///
+        /// [`remaining`]: Self::remaining
+        #[inline]
+        #[must_use]
+        pub fn capacity(&self) -> usize {
+            self.core.core.capacity()
+        }
+
+        /// Returns the unoccupied capacity of the channel for this [`StaticReceiver`]
+        /// (i.e., how many additional elements can be sent before the channel
+        /// will be full).
+        ///
+        /// This is equivalent to subtracting the channel's [`len`] from its [`capacity`].
+        /// # Examples
+        ///
+        /// ```
+        /// use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, rx) = CHANNEL.split();
+        /// assert_eq!(rx.remaining(), 100);
+        ///
+        /// *tx.try_send_ref().unwrap() = 1;
+        /// *tx.try_send_ref().unwrap() = 2;
+        /// *tx.try_send_ref().unwrap() = 3;
+        /// assert_eq!(rx.remaining(), 97);
+        ///
+        /// let _ = rx.try_recv_ref().unwrap();
+        /// assert_eq!(rx.remaining(), 98)
+        /// ```
+        ///
+        /// [`len`]: Self::len
+        /// [`capacity`]: Self::capacity
+        #[must_use]
+        pub fn remaining(&self) -> usize {
+            self.capacity() - self.len()
+        }
+
+        /// Returns the number of elements in the channel of this [`StaticReceiver`].
+        ///
+        /// To determine the channel's remaining *unoccupied* capacity, use
+        /// [`remaining`] instead.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, rx) = CHANNEL.split();
+        /// assert_eq!(rx.len(), 0);
+        ///
+        /// *tx.try_send_ref().unwrap() = 1;
+        /// *tx.try_send_ref().unwrap() = 2;
+        /// *tx.try_send_ref().unwrap() = 3;
+        /// assert_eq!(rx.len(), 3);
+        ///
+        /// let _ = rx.try_recv_ref().unwrap();
+        /// assert_eq!(rx.len(), 2);
+        /// ```
+        ///
+        /// [`remaining`]: Self::remaining
+        #[inline]
+        #[must_use]
+        pub fn len(&self) -> usize {
+            self.core.core.len()
+        }
+
+        /// Returns whether the number of elements in the channel of this
+        /// [`StaticReceiver`] is 0.
+        ///
+        /// # Examples
+        /// ```
+        /// use thingbuf::mpsc::blocking::StaticChannel;
+        ///
+        /// static CHANNEL: StaticChannel<usize, 100> = StaticChannel::new();
+        ///
+        /// let (tx, rx) = CHANNEL.split();
+        /// assert!(rx.is_empty());
+        ///
+        /// *tx.try_send_ref().unwrap() = 1;
+        ///
+        /// assert!(!rx.is_empty());
+        /// ```
+        ///
+        #[inline]
+        #[must_use]
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
         }
     }
 
@@ -1231,6 +1489,122 @@ where
             .core
             .try_send(self.inner.slots.as_ref(), val, &self.inner.recycle)
     }
+
+    /// Returns the *total* capacity of the channel for this [`Sender`].
+    /// This includes both occupied and unoccupied entries.
+    ///
+    /// To determine the channel's remaining *unoccupied* capacity, use
+    /// [`remaining`] instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use thingbuf::mpsc::blocking::channel;
+    ///
+    /// let (tx, _) = channel::<usize>(100);
+    /// assert_eq!(tx.capacity(), 100);
+    /// ```
+    ///
+    /// Even after sending several messages, the capacity remains
+    /// the same:
+    /// ```
+    /// # use thingbuf::mpsc::blocking::channel;
+    ///
+    /// let (tx, rx) = channel::<usize>(100);
+    /// *tx.try_send_ref().unwrap() = 1;
+    /// *tx.try_send_ref().unwrap() = 2;
+    /// *tx.try_send_ref().unwrap() = 3;
+    ///
+    /// assert_eq!(tx.capacity(), 100);
+    /// ```
+    ///
+    /// [`remaining`]: Self::remaining
+    #[inline]
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.inner.core.core.capacity()
+    }
+
+    /// Returns the unoccupied capacity of the channel for this [`Sender`]
+    /// (i.e., how many additional elements can be sent before the channel
+    /// will be full).
+    ///
+    /// This is equivalent to subtracting the channel's [`len`] from its [`capacity`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use thingbuf::mpsc::blocking::channel;
+    ///
+    /// let (tx, rx) = channel::<usize>(100);
+    /// assert_eq!(tx.remaining(), 100);
+    ///
+    /// *tx.try_send_ref().unwrap() = 1;
+    /// *tx.try_send_ref().unwrap() = 2;
+    /// *tx.try_send_ref().unwrap() = 3;
+    /// assert_eq!(tx.remaining(), 97);
+    ///
+    /// let _ = rx.try_recv_ref().unwrap();
+    /// assert_eq!(tx.remaining(), 98)
+    /// ```
+    ///
+    /// [`len`]: Self::len
+    /// [`capacity`]: Self::capacity
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.capacity() - self.len()
+    }
+
+    /// Returns the number of elements in the channel of this [`Sender`].
+    ///
+    /// To determine the channel's remaining *unoccupied* capacity, use
+    /// [`remaining`] instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use thingbuf::mpsc::blocking::channel;
+    ///
+    /// let (tx, rx) = channel::<usize>(100);
+    /// assert_eq!(tx.len(), 0);
+    ///
+    /// *tx.try_send_ref().unwrap() = 1;
+    /// *tx.try_send_ref().unwrap() = 2;
+    /// *tx.try_send_ref().unwrap() = 3;
+    /// assert_eq!(tx.len(), 3);
+    ///
+    /// let _ = rx.try_recv_ref().unwrap();
+    /// assert_eq!(tx.len(), 2);
+    /// ```
+    ///
+    /// [`remaining`]: Self::remaining
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.core.core.len()
+    }
+
+    /// Returns whether the number of elements in the channel of this [`Sender`] is 0.
+    ///
+    /// # Examples
+    /// ```
+    /// use thingbuf::mpsc::blocking::channel;
+    /// let (tx, rx) = channel::<usize>(100);
+    /// assert!(tx.is_empty());
+    ///
+    /// *tx.try_send_ref().unwrap() = 1;
+    ///
+    /// assert!(!tx.is_empty());
+    /// # // keep rx alive so that the send call succeeds --- otherwise,
+    /// # // the channel will close and the send will fail.
+    /// # drop(rx);
+    /// ```
+    ///
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<T, R> Clone for Sender<T, R> {
@@ -1560,6 +1934,118 @@ impl<T, R> Receiver<T, R> {
     /// on this channel. Previously sent messages may still be available.
     pub fn is_closed(&self) -> bool {
         test_dbg!(self.inner.core.tx_count.load(Ordering::SeqCst)) <= 1
+    }
+
+    /// Returns the *total* capacity of the channel for this [`Receiver`].
+    /// This includes both occupied and unoccupied entries.
+    ///
+    /// To determine the channel's remaining *unoccupied* capacity, use
+    /// [`remaining`] instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use thingbuf::mpsc::blocking::channel;
+    ///
+    /// let (_, rx) = channel::<usize>(100);
+    /// assert_eq!(rx.capacity(), 100);
+    /// ```
+    ///
+    /// Even after sending several messages, the capacity remains
+    /// the same:
+    /// ```
+    /// # use thingbuf::mpsc::blocking::channel;
+    ///
+    /// let (tx, rx) = channel::<usize>(100);
+    /// *tx.try_send_ref().unwrap() = 1;
+    /// *tx.try_send_ref().unwrap() = 2;
+    /// *tx.try_send_ref().unwrap() = 3;
+    ///
+    /// assert_eq!(rx.capacity(), 100);
+    /// ```
+    ///
+    /// [`remaining`]: Self::remaining
+    #[inline]
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.inner.core.core.capacity()
+    }
+
+    /// Returns the unoccupied capacity of the channel for this [`Receiver`]
+    /// (i.e., how many additional elements can be sent before the channel
+    /// will be full).
+    ///
+    /// This is equivalent to subtracting the channel's [`len`] from its [`capacity`].
+    /// # Examples
+    ///
+    /// ```
+    /// use thingbuf::mpsc::blocking::channel;
+    ///
+    /// let (tx, rx) = channel::<usize>(100);
+    /// assert_eq!(rx.remaining(), 100);
+    ///
+    /// *tx.try_send_ref().unwrap() = 1;
+    /// *tx.try_send_ref().unwrap() = 2;
+    /// *tx.try_send_ref().unwrap() = 3;
+    /// assert_eq!(rx.remaining(), 97);
+    ///
+    /// let _ = rx.try_recv_ref().unwrap();
+    /// assert_eq!(rx.remaining(), 98)
+    /// ```
+    ///
+    /// [`len`]: Self::len
+    /// [`capacity`]: Self::capacity
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.capacity() - self.len()
+    }
+
+    /// Returns the number of elements in the channel of this [`Receiver`].
+    ///
+    /// To determine the channel's remaining *unoccupied* capacity, use
+    /// [`remaining`] instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use thingbuf::mpsc::blocking::channel;
+    ///
+    /// let (tx, rx) = channel::<usize>(100);
+    /// assert_eq!(rx.len(), 0);
+    ///
+    /// *tx.try_send_ref().unwrap() = 1;
+    /// *tx.try_send_ref().unwrap() = 2;
+    /// *tx.try_send_ref().unwrap() = 3;
+    /// assert_eq!(rx.len(), 3);
+    ///
+    /// let _ = rx.try_recv_ref().unwrap();
+    /// assert_eq!(rx.len(), 2);
+    /// ```
+    ///
+    /// [`remaining`]: Self::remaining
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.core.core.len()
+    }
+
+    /// Returns whether the number of elements in the channel of this [`Receiver`] is 0.
+    ///
+    /// # Examples
+    /// ```
+    /// use thingbuf::mpsc::channel;
+    /// let (tx, rx) = channel::<usize>(100);
+    /// assert!(rx.is_empty());
+    ///
+    /// *tx.try_send_ref().unwrap() = 1;
+    ///
+    /// assert!(!rx.is_empty());
+    /// ```
+    ///
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
