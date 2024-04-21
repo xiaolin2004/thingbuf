@@ -1,3 +1,13 @@
+<a name="v0.1.6"></a>
+## v0.1.6 (2024-04-18)
+
+
+#### Bug Fixes
+
+*   fix senders hanging when the buffer is full (#85) ([723c44ae](https://github.com/hawkw/thingbuf/commit/723c44ae77f76869d5607cbb5a7919477dba23c3), closes [#83](https://github.com/hawkw/thingbuf/issues/83))
+
+
+
 <a name="v0.1.5"></a>
 ## v0.1.5 (2024-04-06)
 

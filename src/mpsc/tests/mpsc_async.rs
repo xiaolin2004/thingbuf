@@ -38,7 +38,7 @@ fn mpsc_try_send_recv() {
 #[cfg_attr(ci_skip_slow_models, ignore)]
 fn mpsc_try_recv_ref() {
     loom::model(|| {
-        let (tx, rx) = channel(2);
+        let (tx, rx) = channel(3);
 
         let p1 = {
             let tx = tx.clone();
@@ -80,14 +80,14 @@ fn mpsc_try_recv_ref() {
 fn mpsc_test_skip_slot() {
     // This test emulates a situation where we might need to skip a slot. The setup includes two writing
     // threads that write elements to the channel and one reading thread that maintains a RecvRef to the
-    // third element until the end of the test, necessitating the skip:
+    // first element until the end of the test, necessitating the skip:
     // Given that the channel capacity is 2, here's the sequence of operations:
-    //   Thread 1 writes: 1, 2
-    //   Thread 2 writes: 3, 4
-    // The main thread reads from slots in this order: 0, 1, 0 (holds ref), 1, 1.
+    //   Thread 1 writes: 1, 2, 3
+    //   Thread 2 writes: 4, 5, 6
+    // The main thread reads from slots in this order: 0 (holds ref), 1, 2, 1, 2, 1.
     // As a result, the third slot is skipped during this process.
     loom::model(|| {
-        let (tx, rx) = channel(2);
+        let (tx, rx) = channel(3);
 
         let p1 = {
             let tx = tx.clone();
@@ -95,6 +95,7 @@ fn mpsc_test_skip_slot() {
                 future::block_on(async move {
                     tx.send(1).await.unwrap();
                     tx.send(2).await.unwrap();
+                    tx.send(3).await.unwrap();
                 })
             })
         };
@@ -102,8 +103,9 @@ fn mpsc_test_skip_slot() {
         let p2 = {
             thread::spawn(move || {
                 future::block_on(async move {
-                    tx.send(3).await.unwrap();
                     tx.send(4).await.unwrap();
+                    tx.send(5).await.unwrap();
+                    tx.send(6).await.unwrap();
                 })
             })
         };
@@ -111,13 +113,13 @@ fn mpsc_test_skip_slot() {
         let mut vals = Vec::new();
         let mut hold: Vec<RecvRef<usize>> = Vec::new();
 
-        while vals.len() < 4 {
+        while vals.len() < 6 {
             match rx.try_recv_ref() {
                 Ok(val) => {
-                    if vals.len() == 2 && !hold.is_empty() {
+                    if vals.len() == 4 && !hold.is_empty() {
                         vals.push(*hold.pop().unwrap());
                         vals.push(*val);
-                    } else if vals.len() == 1 && hold.is_empty() {
+                    } else if vals.is_empty() && hold.is_empty() {
                         hold.push(val);
                     } else {
                         vals.push(*val);
@@ -132,7 +134,7 @@ fn mpsc_test_skip_slot() {
         }
 
         vals.sort_unstable();
-        assert_eq_dbg!(vals, vec![1, 2, 3, 4]);
+        assert_eq_dbg!(vals, vec![1, 2, 3, 4, 5, 6]);
 
         p1.join().unwrap();
         p2.join().unwrap();

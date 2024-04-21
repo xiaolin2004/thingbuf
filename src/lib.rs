@@ -250,6 +250,7 @@ impl Core {
                                 Some(state & HAS_READER | next_state)
                             })
                             .unwrap_or_else(|_| unreachable!()));
+                        tail = next_tail;
                         backoff.spin();
                         continue;
                     }
@@ -306,6 +307,16 @@ impl Core {
             // load it gets reordered differently in the model checker lmao...
             let head = test_dbg!(self.head.fetch_or(0, SeqCst));
             if test_dbg!(wrapping_add(head, self.gen) == tail) {
+                test_println!("channel full");
+                return Err(TrySendError::Full(()));
+            }
+            // if the current state is marked as data written by the current (or even future)
+            // generation, we can spin, as our tail is probably behind the actual tail.
+            // however, if the state is marked as data written by the previous generation and nobody
+            // is reading it, then we don't have any available slots.
+            let (tail_idx, tail_gen) = self.idx_gen(tail);
+            let (state_idx, state_gen) = self.idx_gen(state);
+            if test_dbg!(state_idx == tail_idx + 1) && test_dbg!(state_gen < tail_gen) {
                 test_println!("channel full");
                 return Err(TrySendError::Full(()));
             }
@@ -406,6 +417,7 @@ impl Core {
                 match test_dbg!(self.head.compare_exchange(head, next_head, SeqCst, Acquire)) {
                     Ok(_) => {
                         test_println!("skipped head slot [{}], new head={}", idx, next_head);
+                        head = next_head;
                     }
                     Err(actual) => {
                         test_println!(
@@ -693,6 +705,74 @@ mod tests {
         core.close();
         assert_eq!(core.len(), 0);
         assert_eq!(core.capacity(), CAP);
+
+        // don't panic in drop impl.
+        core.has_dropped_slots = true;
+    }
+
+    #[test]
+    fn full_simple() {
+        const CAP: usize = 3;
+        let mut core = Core::new(CAP);
+        let slots: Box<[Slot<usize>]> = Slot::<usize>::make_boxed_array(CAP);
+        let recycle = recycling::DefaultRecycle::new();
+
+        core.push_ref(&slots, &recycle).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        assert!(matches!(
+            core.push_ref(&slots, &recycle),
+            Err(TrySendError::Full(()))
+        ));
+
+        // don't panic in drop impl.
+        core.has_dropped_slots = true;
+    }
+
+    #[test]
+    fn full_read_and_write() {
+        const CAP: usize = 3;
+        let mut core = Core::new(CAP);
+        let slots: Box<[Slot<usize>]> = Slot::<usize>::make_boxed_array(CAP);
+        let recycle = recycling::DefaultRecycle::new();
+
+        core.push_ref(&slots, &recycle).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        core.pop_ref(&slots).unwrap();
+        core.pop_ref(&slots).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        assert!(matches!(
+            core.push_ref(&slots, &recycle),
+            Err(TrySendError::Full(()))
+        ));
+
+        // don't panic in drop impl.
+        core.has_dropped_slots = true;
+    }
+
+    #[test]
+    fn full_with_skip() {
+        const CAP: usize = 3;
+        let mut core = Core::new(CAP);
+        let slots: Box<[Slot<usize>]> = Slot::<usize>::make_boxed_array(CAP);
+        let recycle = recycling::DefaultRecycle::new();
+
+        core.push_ref(&slots, &recycle).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        core.pop_ref(&slots).unwrap();
+        let _hold = core.pop_ref(&slots).unwrap();
+        core.pop_ref(&slots).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        core.pop_ref(&slots).unwrap();
+        core.push_ref(&slots, &recycle).unwrap();
+        assert!(matches!(
+            core.push_ref(&slots, &recycle),
+            Err(TrySendError::Full(()))
+        ));
 
         // don't panic in drop impl.
         core.has_dropped_slots = true;
